@@ -3,24 +3,75 @@ version: 0.2
 phases:
   pre_build:
     commands:
-      - echo Fazendo login no ECR...      
-      - aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 905418381762.dkr.ecr.us-east-1.amazonaws.com
-      - REPOSITORY_URI=905418381762.dkr.ecr.us-east-1.amazonaws.com/bia
+      - echo "=== PRE BUILD PHASE ==="
+      - echo "Verificando versão do Docker..."
+      - docker --version
+      - echo "Verificando AWS CLI..."
+      - aws --version
+      - echo "Verificando identidade AWS..."
+      - aws sts get-caller-identity
+      - echo "Fazendo login no ECR..."
+      - aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 829115578807.dkr.ecr.us-east-1.amazonaws.com
+      - echo "Login ECR realizado com sucesso!"
+      - echo "Definindo variáveis..."
+      - REPOSITORY_URI=829115578807.dkr.ecr.us-east-1.amazonaws.com/bia
       - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
       - IMAGE_TAG=${COMMIT_HASH:=latest}
+      - echo "Repository URI: $REPOSITORY_URI"
+      - echo "Image Tag: $IMAGE_TAG"
+      
   build:
     commands:
-      - echo Build iniciado em `date`
-      - echo Gerando imagem da BIA...
+      - echo "=== BUILD PHASE ==="
+      - echo "Build iniciado em $(date)"
+      - echo "Verificando espaço em disco..."
+      - df -h
+      - echo "Limpando imagens Docker antigas..."
+      - docker system prune -f
+      - echo "Gerando imagem da BIA..."
       - docker build -t $REPOSITORY_URI:latest .
+      - echo "Build da imagem concluído!"
+      - echo "Taggeando imagem..."
       - docker tag $REPOSITORY_URI:latest $REPOSITORY_URI:$IMAGE_TAG
+      - echo "Verificando imagens criadas..."
+      - docker images | grep bia
+      
   post_build:
     commands:
-      - echo Build finalizado com sucesso em `date`
-      - echo Fazendo push da imagem para o ECR...
-      - docker push $REPOSITORY_URI:latest
-      - docker push $REPOSITORY_URI:$IMAGE_TAG
-      - echo Gerando artefato da imagem para o ECS
+      - echo "=== POST BUILD PHASE ==="
+      - echo "Build finalizado com sucesso em $(date)"
+      - echo "Verificando conectividade com ECR..."
+      - aws ecr describe-repositories --repository-names bia --region us-east-1
+      - echo "Fazendo push da imagem latest para o ECR (com retry)..."
+      - |
+        for i in {1..3}; do
+          echo "Tentativa $i de push da imagem latest..."
+          if docker push $REPOSITORY_URI:latest; then
+            echo "Push da imagem latest realizado com sucesso!"
+            break
+          else
+            echo "Falha na tentativa $i, aguardando 10 segundos..."
+            sleep 10
+          fi
+        done
+      - echo "Fazendo push da imagem com tag para o ECR (com retry)..."
+      - |
+        for i in {1..3}; do
+          echo "Tentativa $i de push da imagem com tag..."
+          if docker push $REPOSITORY_URI:$IMAGE_TAG; then
+            echo "Push da imagem com tag realizado com sucesso!"
+            break
+          else
+            echo "Falha na tentativa $i, aguardando 10 segundos..."
+            sleep 10
+          fi
+        done
+      - echo "Gerando artefato da imagem para o ECS..."
       - printf '[{"name":"bia","imageUri":"%s"}]' $REPOSITORY_URI:$IMAGE_TAG > imagedefinitions.json
+      - echo "Conteúdo do imagedefinitions.json:"
+      - cat imagedefinitions.json
+      - echo "Verificando imagens no ECR..."
+      - aws ecr list-images --repository-name bia --region us-east-1
+      
 artifacts:
   files: imagedefinitions.json
