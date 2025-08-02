@@ -155,50 +155,46 @@ create_task_definition() {
     
     log_info "Criando nova task definition..."
     
-    # Obter a task definition atual
-    local current_task_def=$(aws ecs describe-task-definition --task-definition $task_family --region $region --query 'taskDefinition' --output json)
+    # Criar arquivos temporários
+    local current_task_file=$(mktemp)
+    local new_task_file=$(mktemp)
     
-    if [ $? -ne 0 ]; then
+    # Obter a task definition atual
+    if ! aws ecs describe-task-definition --task-definition $task_family --region $region --query 'taskDefinition' --output json > "$current_task_file"; then
         log_error "Não foi possível obter a task definition atual: $task_family"
+        rm -f "$current_task_file" "$new_task_file"
         exit 1
     fi
-    
-    # Salvar em arquivo temporário para melhor manipulação
-    local temp_file=$(mktemp)
-    echo "$current_task_def" > "$temp_file"
     
     # Criar nova task definition com a nova imagem
-    local new_task_def=$(jq --arg image "$ecr_uri:$tag" '
+    if ! jq --arg image "$ecr_uri:$tag" '
         .containerDefinitions[0].image = $image |
         del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .placementConstraints, .compatibilities, .registeredAt, .registeredBy)
-    ' "$temp_file")
+    ' "$current_task_file" > "$new_task_file"; then
+        log_error "Erro ao processar task definition com jq"
+        rm -f "$current_task_file" "$new_task_file"
+        exit 1
+    fi
     
-    # Salvar nova task definition em arquivo temporário
-    local new_temp_file=$(mktemp)
-    echo "$new_task_def" > "$new_temp_file"
-    
-    # Registrar nova task definition e capturar o resultado completo
-    local register_result=$(aws ecs register-task-definition --region $region --cli-input-json file://"$new_temp_file" 2>/dev/null)
-    local register_exit_code=$?
-    
-    # Limpar arquivos temporários
-    rm -f "$temp_file" "$new_temp_file"
-    
-    if [ $register_exit_code -ne 0 ]; then
+    # Registrar nova task definition
+    log_info "Registrando nova task definition..."
+    local new_revision
+    if new_revision=$(aws ecs register-task-definition --region $region --cli-input-json file://"$new_task_file" --query 'taskDefinition.revision' --output text 2>/dev/null); then
+        # Limpar arquivos temporários
+        rm -f "$current_task_file" "$new_task_file"
+        
+        if [ "$new_revision" = "None" ] || [ -z "$new_revision" ]; then
+            log_error "Não foi possível obter a revision da nova task definition"
+            exit 1
+        fi
+        
+        log_success "Nova task definition criada: $task_family:$new_revision"
+        echo $new_revision
+    else
         log_error "Falha ao registrar nova task definition"
+        rm -f "$current_task_file" "$new_task_file"
         exit 1
     fi
-    
-    # Extrair a revision do resultado
-    local new_revision=$(echo "$register_result" | jq -r '.taskDefinition.revision')
-    
-    if [ "$new_revision" = "null" ] || [ -z "$new_revision" ]; then
-        log_error "Não foi possível obter a revision da nova task definition"
-        exit 1
-    fi
-    
-    log_success "Nova task definition criada: $task_family:$new_revision"
-    echo $new_revision
 }
 
 # Função para atualizar o serviço ECS

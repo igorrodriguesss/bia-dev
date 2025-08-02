@@ -10,3 +10,4 @@ docker compose exec server bash -c 'npx sequelize db:migrate'
 ```
 
 # Teste de deploy
+# Script corrigido
